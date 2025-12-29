@@ -8,11 +8,12 @@ HL2DM-specific flags and metadata.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
 from .constants import (
+    DEFAULT_PLAYER_DIMS,
     DEFAULT_WAYPOINT_SPACING,
     HL2DMWaypointSubType,
     MAX_CONNECTION_DISTANCE,
@@ -37,6 +38,9 @@ from .entity_analyzer import (
 from .geometry_extractor import LadderSurface
 from .navmesh_generator import NavigationMesh
 from .vector import Vector3
+
+if TYPE_CHECKING:
+    from .ray_tracer import BSPRayTracer
 
 
 @dataclass
@@ -90,6 +94,8 @@ class HL2DMWaypointConverter:
         self,
         spacing: float = DEFAULT_WAYPOINT_SPACING,
         max_waypoints: int = MAX_WAYPOINTS,
+        ray_tracer: Optional["BSPRayTracer"] = None,
+        use_ray_tracing: bool = True,
     ):
         """
         Initialize the waypoint converter.
@@ -97,9 +103,13 @@ class HL2DMWaypointConverter:
         Args:
             spacing: Distance between waypoints
             max_waypoints: Maximum number of waypoints to generate
+            ray_tracer: Optional BSP ray tracer for accurate line-of-sight checks
+            use_ray_tracing: Whether to use ray tracing for connections (if tracer available)
         """
         self.spacing = spacing
         self.max_waypoints = max_waypoints
+        self.ray_tracer = ray_tracer
+        self.use_ray_tracing = use_ray_tracing
         self._waypoints: List[Waypoint] = []
         self._spatial_hash: Dict[Tuple[int, int, int], List[int]] = {}
         self._cell_size = 128.0
@@ -432,7 +442,7 @@ class HL2DMWaypointConverter:
         """
         Check if two waypoints can be connected.
 
-        This is a simplified check. Full implementation would use ray tracing.
+        Uses ray tracing for accurate line-of-sight checks when available.
         """
         distance = wp_a.origin.distance_to(wp_b.origin)
 
@@ -460,6 +470,27 @@ class HL2DMWaypointConverter:
             or wp_b.has_flag(WaypointFlag.W_FL_LADDER)
         ):
             return True
+
+        # Use ray tracing for accurate line-of-sight check
+        if self.ray_tracer and self.use_ray_tracing:
+            # Check line of sight at player eye level
+            if not self.ray_tracer.line_of_sight(
+                wp_a.origin,
+                wp_b.origin,
+                player_height_offset=DEFAULT_PLAYER_DIMS.crouch_height,
+            ):
+                return False
+
+            # For longer distances, also check if player can walk the path
+            if distance > 256:
+                if not self.ray_tracer.can_walk_between(
+                    wp_a.origin,
+                    wp_b.origin,
+                    player_radius=DEFAULT_PLAYER_DIMS.radius,
+                    player_height=DEFAULT_PLAYER_DIMS.standing_height,
+                    step_height=DEFAULT_PLAYER_DIMS.step_height,
+                ):
+                    return False
 
         return True
 
@@ -577,6 +608,8 @@ def convert_to_waypoints(
     ladders: Optional[List[LadderSurface]] = None,
     spacing: float = DEFAULT_WAYPOINT_SPACING,
     max_waypoints: int = MAX_WAYPOINTS,
+    ray_tracer: Optional["BSPRayTracer"] = None,
+    use_ray_tracing: bool = True,
 ) -> List[Waypoint]:
     """
     Convenience function to convert navmesh and entities to waypoints.
@@ -587,9 +620,16 @@ def convert_to_waypoints(
         ladders: Detected ladder surfaces
         spacing: Waypoint spacing
         max_waypoints: Maximum waypoint count
+        ray_tracer: Optional BSP ray tracer for accurate line-of-sight
+        use_ray_tracing: Whether to use ray tracing for connections
 
     Returns:
         List of waypoints
     """
-    converter = HL2DMWaypointConverter(spacing=spacing, max_waypoints=max_waypoints)
+    converter = HL2DMWaypointConverter(
+        spacing=spacing,
+        max_waypoints=max_waypoints,
+        ray_tracer=ray_tracer,
+        use_ray_tracing=use_ray_tracing,
+    )
     return converter.convert(navmesh, entities, ladders)

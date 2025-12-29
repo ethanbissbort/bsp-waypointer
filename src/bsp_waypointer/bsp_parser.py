@@ -112,6 +112,43 @@ class Model:
 
 
 @dataclass
+class BSPNode:
+    """BSP tree node structure."""
+    plane_index: int
+    children: Tuple[int, int]  # Negative = leaf index (-1 - leaf_index)
+    mins: Tuple[int, int, int]
+    maxs: Tuple[int, int, int]
+    first_face: int
+    num_faces: int
+    area: int
+
+
+@dataclass
+class BSPLeaf:
+    """BSP tree leaf structure."""
+    contents: int
+    cluster: int
+    area_flags: int  # area:9, flags:7 packed
+    mins: Tuple[int, int, int]
+    maxs: Tuple[int, int, int]
+    first_leaf_face: int
+    num_leaf_faces: int
+    first_leaf_brush: int
+    num_leaf_brushes: int
+    leaf_water_data_id: int
+
+    @property
+    def area(self) -> int:
+        """Extract area from packed area_flags."""
+        return self.area_flags & 0x1FF
+
+    @property
+    def flags(self) -> int:
+        """Extract flags from packed area_flags."""
+        return (self.area_flags >> 9) & 0x7F
+
+
+@dataclass
 class DispInfo:
     """Displacement info structure."""
     start_position: Vector3
@@ -198,6 +235,11 @@ class BSPFile:
     disp_infos: List[DispInfo] = field(default_factory=list)
     disp_verts: List[DispVert] = field(default_factory=list)
     entities: List[Entity] = field(default_factory=list)
+    # BSP tree structures for ray tracing
+    nodes: List[BSPNode] = field(default_factory=list)
+    leafs: List[BSPLeaf] = field(default_factory=list)
+    leaf_faces: List[int] = field(default_factory=list)
+    leaf_brushes: List[int] = field(default_factory=list)
 
     @property
     def world_bounds(self) -> Optional[BoundingBox]:
@@ -294,6 +336,11 @@ class BSPParser:
         self._read_dispinfo()
         self._read_dispverts()
         self._read_entities()
+        # BSP tree structures for ray tracing
+        self._read_nodes()
+        self._read_leafs()
+        self._read_leaf_faces()
+        self._read_leaf_brushes()
 
     def _read_lump_data(self, lump: BSPLump) -> bytes:
         """Read raw lump data."""
@@ -561,6 +608,132 @@ class BSPParser:
         # Entity lump is null-terminated text
         text = data.rstrip(b"\x00").decode("ascii", errors="replace")
         self._bsp.entities = self._parse_entities(text)
+
+    def _read_nodes(self) -> None:
+        """Read BSP tree nodes lump (32 bytes per node)."""
+        data = self._read_lump_data(BSPLump.NODES)
+        if not data:
+            return
+
+        count = len(data) // 32
+        for i in range(count):
+            offset = i * 32
+            (
+                plane_index,
+                child0,
+                child1,
+                min_x,
+                min_y,
+                min_z,
+                max_x,
+                max_y,
+                max_z,
+                first_face,
+                num_faces,
+                area,
+            ) = struct.unpack_from("<Iii6h2HH", data, offset)
+
+            self._bsp.nodes.append(
+                BSPNode(
+                    plane_index=plane_index,
+                    children=(child0, child1),
+                    mins=(min_x, min_y, min_z),
+                    maxs=(max_x, max_y, max_z),
+                    first_face=first_face,
+                    num_faces=num_faces,
+                    area=area,
+                )
+            )
+
+    def _read_leafs(self) -> None:
+        """Read BSP tree leafs lump (32 bytes per leaf in v20+)."""
+        data = self._read_lump_data(BSPLump.LEAFS)
+        if not data:
+            return
+
+        # Leaf size depends on BSP version
+        # v19: 56 bytes, v20+: 32 bytes
+        if self._bsp.version >= 20:
+            leaf_size = 32
+        else:
+            leaf_size = 56
+
+        count = len(data) // leaf_size
+        for i in range(count):
+            offset = i * leaf_size
+            if leaf_size == 32:
+                (
+                    contents,
+                    cluster,
+                    area_flags,
+                    min_x,
+                    min_y,
+                    min_z,
+                    max_x,
+                    max_y,
+                    max_z,
+                    first_leaf_face,
+                    num_leaf_faces,
+                    first_leaf_brush,
+                    num_leaf_brushes,
+                    leaf_water_data_id,
+                ) = struct.unpack_from("<iHH6hHHHHh", data, offset)
+            else:
+                # v19 format with ambient lighting data
+                (
+                    contents,
+                    cluster,
+                    area_flags,
+                    min_x,
+                    min_y,
+                    min_z,
+                    max_x,
+                    max_y,
+                    max_z,
+                    first_leaf_face,
+                    num_leaf_faces,
+                    first_leaf_brush,
+                    num_leaf_brushes,
+                    leaf_water_data_id,
+                ) = struct.unpack_from("<iHH6hHHHHh", data, offset)
+                # Skip ambient lighting data (24 bytes)
+
+            self._bsp.leafs.append(
+                BSPLeaf(
+                    contents=contents,
+                    cluster=cluster,
+                    area_flags=area_flags,
+                    mins=(min_x, min_y, min_z),
+                    maxs=(max_x, max_y, max_z),
+                    first_leaf_face=first_leaf_face,
+                    num_leaf_faces=num_leaf_faces,
+                    first_leaf_brush=first_leaf_brush,
+                    num_leaf_brushes=num_leaf_brushes,
+                    leaf_water_data_id=leaf_water_data_id,
+                )
+            )
+
+    def _read_leaf_faces(self) -> None:
+        """Read leaf face references lump (2 bytes per entry)."""
+        data = self._read_lump_data(BSPLump.LEAFFACES)
+        if not data:
+            return
+
+        count = len(data) // 2
+        for i in range(count):
+            (face_index,) = struct.unpack_from("<H", data, i * 2)
+            self._bsp.leaf_faces.append(face_index)
+
+    def _read_leaf_brushes(self) -> None:
+        """Read leaf brush references lump (2 bytes per entry)."""
+        data = self._read_lump_data(BSPLump.LEAFBRUSHES)
+        if not data:
+            return
+
+        count = len(data) // 2
+        for i in range(count):
+            (brush_index,) = struct.unpack_from("<H", data, i * 2)
+            self._bsp.leaf_brushes.append(brush_index)
 
     def _parse_entities(self, text: str) -> List[Entity]:
         """
