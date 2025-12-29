@@ -14,6 +14,8 @@ from .navmesh_generator import NavmeshGenerator, NavigationMesh
 from .entity_analyzer import HL2DMEntityAnalyzer, HL2DMEntityData
 from .waypoint_converter import HL2DMWaypointConverter, Waypoint
 from .rcw_writer import RCWWriter
+from .ray_tracer import BSPRayTracer, TraceResult
+from .recast_navmesh import RecastNavmeshGenerator, RecastConfig, is_recast_available
 
 __all__ = [
     "BSPParser",
@@ -27,4 +29,11 @@ __all__ = [
     "HL2DMWaypointConverter",
     "Waypoint",
     "RCWWriter",
+    # Ray tracing
+    "BSPRayTracer",
+    "TraceResult",
+    # Recast navmesh
+    "RecastNavmeshGenerator",
+    "RecastConfig",
+    "is_recast_available",
 ]

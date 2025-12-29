@@ -18,7 +18,9 @@ from .constants import DEFAULT_PLAYER_DIMS, DEFAULT_WAYPOINT_SPACING, MAX_WAYPOI
 from .entity_analyzer import HL2DMEntityAnalyzer
 from .geometry_extractor import GeometryExtractor
 from .navmesh_generator import NavmeshConfig, NavmeshGenerator
+from .ray_tracer import BSPRayTracer
 from .rcw_writer import write_waypoints
+from .recast_navmesh import RecastConfig, RecastNavmeshGenerator, is_recast_available
 from .waypoint_converter import HL2DMWaypointConverter
 
 
@@ -132,6 +134,44 @@ Examples:
         help=f"Max step height (default: {DEFAULT_PLAYER_DIMS.step_height})",
     )
 
+    # Navmesh options
+    navmesh = parser.add_argument_group("Navmesh Options")
+    navmesh.add_argument(
+        "--navmesh-generator",
+        choices=["simple", "recast"],
+        default="recast",
+        help="Navmesh generator to use (default: recast if available, else simple)",
+    )
+    navmesh.add_argument(
+        "--cell-size",
+        type=float,
+        default=8.0,
+        metavar="N",
+        help="Navmesh cell size in units (default: 8.0)",
+    )
+    navmesh.add_argument(
+        "--cell-height",
+        type=float,
+        default=4.0,
+        metavar="N",
+        help="Navmesh cell height in units (default: 4.0)",
+    )
+
+    # Ray tracing options
+    raytracing = parser.add_argument_group("Ray Tracing Options")
+    raytracing.add_argument(
+        "--no-raytracing",
+        action="store_true",
+        help="Disable BSP ray tracing for line-of-sight checks",
+    )
+    raytracing.add_argument(
+        "--ray-trace-eye-height",
+        type=float,
+        default=36.0,
+        metavar="N",
+        help="Eye height offset for ray tracing (default: 36.0, crouch height)",
+    )
+
     # Debug options
     debug = parser.add_argument_group("Debug Options")
     debug.add_argument(
@@ -203,6 +243,11 @@ def generate_waypoints(
     include_teleporters: bool = True,
     include_entities: bool = True,
     weapon_priority: bool = False,
+    navmesh_generator: str = "recast",
+    cell_size: float = 8.0,
+    cell_height: float = 4.0,
+    use_ray_tracing: bool = True,
+    ray_trace_eye_height: float = 36.0,
     debug_obj: Optional[Path] = None,
     debug_navmesh: Optional[Path] = None,
     debug_text: bool = False,
@@ -254,15 +299,48 @@ def generate_waypoints(
             logger.info(f"Writing debug geometry: {debug_obj}")
             mesh.export_obj(debug_obj)
 
+        # Create ray tracer for line-of-sight checks
+        ray_tracer = None
+        if use_ray_tracing:
+            logger.info("Creating BSP ray tracer for line-of-sight checks...")
+            ray_tracer = BSPRayTracer(bsp)
+            logger.info(f"  BSP nodes: {len(bsp.nodes)}")
+            logger.info(f"  BSP leafs: {len(bsp.leafs)}")
+            logger.info(f"  Brushes: {len(bsp.brushes)}")
+
         # Generate navigation mesh
         logger.info("Generating navigation mesh...")
-        config = NavmeshConfig(
-            agent_height=agent_height,
-            agent_radius=agent_radius,
-            agent_climb=step_height,
-        )
-        navgen = NavmeshGenerator(config)
-        navmesh = navgen.generate(mesh)
+
+        # Select navmesh generator
+        if navmesh_generator == "recast" or (
+            navmesh_generator == "recast" and is_recast_available()
+        ):
+            if is_recast_available():
+                logger.info("  Using Recast navmesh generator")
+            else:
+                logger.info("  Recast not available, using enhanced fallback")
+
+            recast_config = RecastConfig(
+                cell_size=cell_size,
+                cell_height=cell_height,
+                agent_height=agent_height,
+                agent_radius=agent_radius,
+                agent_max_climb=step_height,
+            )
+            recast_gen = RecastNavmeshGenerator(recast_config)
+            navmesh = recast_gen.generate(mesh)
+        else:
+            logger.info("  Using simple navmesh generator")
+            config = NavmeshConfig(
+                agent_height=agent_height,
+                agent_radius=agent_radius,
+                agent_climb=step_height,
+                cell_size=cell_size,
+                cell_height=cell_height,
+            )
+            navgen = NavmeshGenerator(config)
+            navmesh = navgen.generate(mesh)
+
         logger.info(f"  Navigation polygons: {navmesh.num_polygons}")
 
         # Analyze entities
@@ -292,10 +370,14 @@ def generate_waypoints(
 
         # Convert to waypoints
         logger.info("Converting to waypoints...")
+        if use_ray_tracing and ray_tracer:
+            logger.info("  Using BSP ray tracing for connection validation")
         spacing = calculate_spacing(density)
         converter = HL2DMWaypointConverter(
             spacing=spacing,
             max_waypoints=max_waypoints,
+            ray_tracer=ray_tracer,
+            use_ray_tracing=use_ray_tracing,
         )
         waypoints = converter.convert(navmesh, entities, ladders)
         logger.info(f"  Total waypoints: {len(waypoints)}")
@@ -373,6 +455,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         include_teleporters=not args.no_teleporters,
         include_entities=not args.no_entities,
         weapon_priority=args.weapon_priority,
+        navmesh_generator=args.navmesh_generator,
+        cell_size=args.cell_size,
+        cell_height=args.cell_height,
+        use_ray_tracing=not args.no_raytracing,
+        ray_trace_eye_height=args.ray_trace_eye_height,
         debug_obj=args.debug_obj,
         debug_navmesh=args.debug_navmesh,
         debug_text=args.debug_text,
