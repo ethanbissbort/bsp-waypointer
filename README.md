@@ -37,6 +37,22 @@ pip install -e .
 - Python 3.9 or higher
 - NumPy
 
+### Optional Dependencies
+
+#### Recast/Detour (Recommended)
+
+For higher-quality navmesh generation, install the Recast/Detour library:
+
+```bash
+# Install with Recast support
+pip install bsp-waypointer[recast]
+
+# Or install PyRecastDetour separately
+pip install PyRecastDetour
+```
+
+Without Recast, the tool uses an enhanced fallback navmesh generator that produces good results but may not be as optimal for complex geometry.
+
 ## Usage
 
 ### Basic Usage
@@ -70,6 +86,17 @@ Agent Parameters:
   --agent-height N        Agent height in units (default: 72)
   --agent-radius N        Agent radius in units (default: 16)
   --step-height N         Max step height (default: 18)
+
+Navmesh Options:
+  --navmesh-generator {simple,recast}
+                          Navmesh generator (default: recast if available)
+  --cell-size N           Navmesh cell size in units (default: 8.0)
+  --cell-height N         Navmesh cell height in units (default: 4.0)
+
+Ray Tracing Options:
+  --no-raytracing         Disable BSP ray tracing for line-of-sight
+  --ray-trace-eye-height N
+                          Eye height for ray tracing (default: 36.0)
 
 Debug Options:
   --debug-obj FILE        Output debug geometry as OBJ
@@ -156,6 +183,10 @@ from bsp_waypointer import (
     HL2DMEntityAnalyzer,
     HL2DMWaypointConverter,
     RCWWriter,
+    BSPRayTracer,
+    RecastNavmeshGenerator,
+    RecastConfig,
+    is_recast_available,
 )
 
 # Parse BSP file
@@ -167,21 +198,53 @@ extractor = GeometryExtractor()
 mesh = extractor.extract(bsp, parser)
 ladders = extractor.get_ladders()
 
-# Generate navmesh
-navgen = NavmeshGenerator()
+# Create ray tracer for accurate line-of-sight
+ray_tracer = BSPRayTracer(bsp)
+
+# Generate navmesh (using Recast if available)
+if is_recast_available():
+    config = RecastConfig(agent_height=72.0, agent_radius=16.0)
+    navgen = RecastNavmeshGenerator(config)
+else:
+    navgen = NavmeshGenerator()
 navmesh = navgen.generate(mesh)
 
 # Analyze entities
 analyzer = HL2DMEntityAnalyzer()
 entities = analyzer.analyze(bsp)
 
-# Convert to waypoints
-converter = HL2DMWaypointConverter()
+# Convert to waypoints with ray tracing
+converter = HL2DMWaypointConverter(ray_tracer=ray_tracer)
 waypoints = converter.convert(navmesh, entities, ladders)
 
 # Write output
 writer = RCWWriter()
 writer.write("dm_lockdown.rcw", waypoints)
+```
+
+### Ray Tracing API
+
+```python
+from bsp_waypointer import BSPParser, BSPRayTracer
+from bsp_waypointer.vector import Vector3
+
+# Load BSP and create ray tracer
+parser = BSPParser()
+bsp = parser.load("dm_lockdown.bsp")
+tracer = BSPRayTracer(bsp)
+
+# Check line of sight between two points
+start = Vector3(0, 0, 64)
+end = Vector3(500, 0, 64)
+
+if tracer.line_of_sight(start, end):
+    print("Clear line of sight")
+else:
+    print("Blocked by geometry")
+
+# Check if player can walk between points
+if tracer.can_walk_between(start, end, player_radius=16.0, player_height=72.0):
+    print("Path is walkable")
 ```
 
 ## Project Structure
@@ -196,6 +259,8 @@ bsp-waypointer/
 │   ├── bsp_parser.py         # BSP file parser
 │   ├── geometry_extractor.py # Geometry extraction
 │   ├── navmesh_generator.py  # Navigation mesh generation
+│   ├── recast_navmesh.py     # Recast/Detour navmesh generator
+│   ├── ray_tracer.py         # BSP ray tracing for line-of-sight
 │   ├── entity_analyzer.py    # HL2DM entity analysis
 │   ├── waypoint_converter.py # Waypoint conversion
 │   └── rcw_writer.py         # RCW file writer
@@ -215,6 +280,9 @@ cd bsp-waypointer
 
 # Install in development mode with dev dependencies
 pip install -e ".[dev]"
+
+# Install with all optional dependencies (including Recast)
+pip install -e ".[all]"
 ```
 
 ### Running Tests
@@ -238,17 +306,33 @@ mypy src
 
 ## Limitations
 
-- Navigation mesh generation is simplified (grid-based) compared to Recast/Detour
-- Line-of-sight checks for connections are approximated
+- Without PyRecastDetour installed, navmesh generation uses an enhanced fallback algorithm
 - Some complex geometry may not generate optimal waypoints
 - Visibility table generation uses distance heuristics
+- Displacement surface support is basic
+
+## Features
+
+### BSP Ray Tracing
+
+The tool uses BSP tree traversal for accurate line-of-sight checks:
+- Traces rays through the BSP tree to detect solid geometry
+- Supports hull tracing for player collision detection
+- Validates waypoint connections against actual map geometry
+
+### Recast/Detour Integration
+
+When PyRecastDetour is installed, the tool uses industry-standard navmesh generation:
+- Polygon merging for reduced navmesh complexity
+- Proper handling of complex geometry
+- Configurable cell size and agent parameters
 
 ## Future Enhancements
 
-- Integration with Recast/Detour for better navmesh generation
-- Ray tracing for accurate line-of-sight
-- Support for additional Source engine games
-- GUI application
+- Support for additional Source engine games (TF2, CS:S)
+- GUI application for waypoint editing
+- Improved displacement surface handling
+- Pre-built Recast wheels for easier installation
 
 ## License
 

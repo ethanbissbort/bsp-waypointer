@@ -23,6 +23,22 @@ logger = logging.getLogger(__name__)
 
 # Try to import Recast bindings
 RECAST_AVAILABLE = False
+RECAST_INSTALL_MSG = """
+================================================================================
+Recast/Detour library not found - using enhanced fallback navmesh generation.
+
+For better navmesh quality, install PyRecastDetour:
+
+    pip install PyRecastDetour
+
+Or install with all optional dependencies:
+
+    pip install bsp-waypointer[recast]
+
+See README.md for more information.
+================================================================================
+"""
+
 try:
     import pyrecast as recast
     RECAST_AVAILABLE = True
@@ -35,6 +51,17 @@ except ImportError:
         logger.debug("recastnavigation is available")
     except ImportError:
         logger.debug("No Recast bindings available, using fallback implementation")
+
+
+_RECAST_WARNING_SHOWN = False
+
+
+def _show_recast_install_instructions() -> None:
+    """Show installation instructions for Recast (only once per session)."""
+    global _RECAST_WARNING_SHOWN
+    if not _RECAST_WARNING_SHOWN and not RECAST_AVAILABLE:
+        logger.warning(RECAST_INSTALL_MSG)
+        _RECAST_WARNING_SHOWN = True
 
 
 @dataclass
@@ -121,7 +148,7 @@ class RecastNavmeshGenerator:
         if RECAST_AVAILABLE:
             return self._generate_with_recast(mesh)
         else:
-            logger.info("Recast not available, using enhanced fallback navmesh generation")
+            _show_recast_install_instructions()
             return self._generate_fallback(mesh)
 
     def _generate_with_recast(self, mesh: TriangleMesh) -> NavigationMesh:
